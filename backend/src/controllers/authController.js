@@ -10,6 +10,16 @@ function requireString(value, fieldName) {
   return value.trim();
 }
 
+function requireEmail(value) {
+  const email = requireString(value, 'email').toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    const error = new Error('email must be a valid email address.');
+    error.status = 400;
+    throw error;
+  }
+  return email;
+}
+
 function serializeUser(user) {
   return {
     _id: user._id,
@@ -26,8 +36,8 @@ function serializeUser(user) {
 }
 
 export async function syncGoogleUserHandler(req, res) {
-  const googleId = requireString(req.body.googleId ?? req.body.sub, 'googleId');
-  const email = requireString(req.body.email, 'email').toLowerCase();
+  const googleId = requireString(req.body.googleId, 'googleId');
+  const email = requireEmail(req.body.email);
   const name = requireString(req.body.name, 'name');
   const picture = typeof req.body.picture === 'string' ? req.body.picture.trim() : undefined;
 

@@ -25,9 +25,10 @@ app.use((req, res) => {
 });
 
 app.use((error, _req, res, _next) => {
-  const status = error.status || 500;
+  const isDuplicateKey = error?.code === 11000;
+  const status = error.status || (isDuplicateKey ? 409 : 500);
   res.status(status).json({
-    message: error.message || 'Internal server error',
+    message: isDuplicateKey ? 'A user with these credentials already exists.' : error.message || 'Internal server error',
   });
 });
 
