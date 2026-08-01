@@ -74,11 +74,11 @@ function releaseSensorResources(res: SensorResources) {
   }
   res.analyser = null;
   if (res.audioCtx && res.audioCtx.state !== 'closed') {
-    res.audioCtx.close().catch(() => {});
+    res.audioCtx.close().catch(() => { });
     res.audioCtx = null;
   }
   if (res.recognition) {
-    try { res.recognition.stop(); } catch (_) {}
+    try { res.recognition.stop(); } catch (_) { }
     res.recognition = null;
   }
   if (res.motionHandler) {
@@ -86,7 +86,7 @@ function releaseSensorResources(res: SensorResources) {
     res.motionHandler = null;
   }
   if (res.wakeLock) {
-    res.wakeLock.release().catch(() => {});
+    res.wakeLock.release().catch(() => { });
     res.wakeLock = null;
   }
 }
@@ -108,6 +108,7 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
   const escalationTimer = useRef<number | null>(null);
   const riskInterval = useRef<number | null>(null);
   const monitoringSessionId = useRef<string | null>(null);
+  const autoEmergencyTriggered = useRef(false);
   const sensors = useRef<SensorResources>(makeSensorResources());
 
   // Keep statusRef in sync with state
@@ -158,11 +159,40 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
     };
   }, [liveLocation, readBatteryLevel]);
 
+  /** ---------- Escalation Engine ---------- */
+  const escalateToEmergency = useCallback(async () => {
+    if (statusRef.current === 'emergency') return;
+    updateStatus('emergency');
+    const loc = locationRef.current ?? DEFAULT_LOCATION;
+    try {
+      await triggerEmergencyAlert(loc, guardians, user);
+      await sendMonitoringSnapshot(true);
+    } catch (err) {
+      console.error('[SafeWalk] Emergency alert failed:', err);
+    }
+  }, [guardians, updateStatus, user]);
+
+  const checkAutoEmergencyRisk = useCallback((score?: number) => {
+    if (
+      score !== undefined &&
+      score >= 65 &&
+      statusRef.current !== 'emergency' &&
+      !autoEmergencyTriggered.current
+    ) {
+      autoEmergencyTriggered.current = true;
+      escalateToEmergency();
+    }
+  }, [escalateToEmergency]);
+
   const sendMonitoringSnapshot = useCallback(async (isSos = false) => {
     if (!user || !monitoringSessionId.current) return;
 
     const snapshot = await collectSnapshotData();
     setRiskScore(snapshot.score);
+
+    if (!isSos) {
+      checkAutoEmergencyRisk(snapshot.score?.score);
+    }
 
     await monitoringService.update({
       userId: user.id,
@@ -178,20 +208,7 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
       isSos,
       batteryLevel: snapshot.batteryLevel,
     });
-  }, [collectSnapshotData, guardians, user]);
-
-  /** ---------- Escalation Engine ---------- */
-  const escalateToEmergency = useCallback(async () => {
-    if (statusRef.current === 'emergency') return;
-    updateStatus('emergency');
-    const loc = locationRef.current ?? DEFAULT_LOCATION;
-    try {
-      await triggerEmergencyAlert(loc);
-      await sendMonitoringSnapshot(true);
-    } catch (err) {
-      console.error('[SafeWalk] Emergency alert failed:', err);
-    }
-  }, [sendMonitoringSnapshot, updateStatus]);
+  }, [checkAutoEmergencyRisk, collectSnapshotData, guardians, user]);
 
   const recordAnomaly = useCallback((source: string) => {
     if (statusRef.current === 'emergency') return;
@@ -301,7 +318,7 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
             recordAnomaly('Distress Keyword (High Confidence Boost)');
           }
         };
-        recognition.onerror = () => {}; // silence non-fatal errors
+        recognition.onerror = () => { }; // silence non-fatal errors
         recognition.start();
         res.recognition = recognition;
       }
@@ -331,6 +348,7 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
 
   /** ---------- Public Controls ---------- */
   const startWalk = useCallback(async () => {
+    autoEmergencyTriggered.current = false;
     anomalyTimestamps.current = [];
     speedRef.current = 0;
     stopsRef.current = 0;
@@ -366,6 +384,8 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
       console.warn('[SafeWalk] Backend monitoring session failed to start:', err);
     }
 
+    checkAutoEmergencyRisk(snapshot.score?.score);
+
     // Start risk scoring and backend snapshots.
     riskInterval.current = window.setInterval(async () => {
       if (statusRef.current === 'idle') return;
@@ -375,9 +395,10 @@ export function useSmartSafeWalk(liveLocation: Coordinates | null = null) {
         // Silently ignore API errors during walk (rate limits etc.)
       }
     }, MONITORING_UPDATE_MS);
-  }, [collectSnapshotData, guardians, sendMonitoringSnapshot, startSensors, updateStatus, user]);
+  }, [checkAutoEmergencyRisk, collectSnapshotData, guardians, sendMonitoringSnapshot, startSensors, updateStatus, user]);
 
   const stopWalk = useCallback(async () => {
+    autoEmergencyTriggered.current = false;
     if (escalationTimer.current) {
       clearTimeout(escalationTimer.current);
       escalationTimer.current = null;
